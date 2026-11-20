@@ -1,0 +1,20 @@
+# Environnement Python
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets : ne jamais publier de clés d'API
+.env
+*.key
+secrets*
+
+# Node-RED : ces fichiers contiennent les identifiants saisis dans l'éditeur
+flows_cred.json
+*_cred.json
+.config*.json
+node_modules/
+
+# Divers
+.vscode/
+.DS_Store

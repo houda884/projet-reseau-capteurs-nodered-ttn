@@ -1,0 +1,475 @@
+[
+  {
+    "id": "tab_ttn2",
+    "type": "tab",
+    "label": "TTN + alertes",
+    "disabled": false,
+    "info": ""
+  },
+  {
+    "id": "c_a1",
+    "type": "comment",
+    "z": "tab_ttn2",
+    "name": "TTN : messages décodés",
+    "info": "",
+    "x": 160,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "c_a2",
+    "type": "comment",
+    "z": "tab_ttn2",
+    "name": "Extraction des mesures",
+    "info": "",
+    "x": 440,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "c_a3",
+    "type": "comment",
+    "z": "tab_ttn2",
+    "name": "Règles d'alerte",
+    "info": "",
+    "x": 760,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "c_a4",
+    "type": "comment",
+    "z": "tab_ttn2",
+    "name": "Dashboard",
+    "info": "",
+    "x": 1060,
+    "y": 40,
+    "wires": []
+  },
+  {
+    "id": "mqtt_ttn2",
+    "type": "mqtt in",
+    "z": "tab_ttn2",
+    "name": "",
+    "topic": "v3/station-meteo-bouya@ttn/devices/+/up",
+    "qos": "0",
+    "datatype": "auto-detect",
+    "broker": "broker_ttn",
+    "nl": false,
+    "rap": true,
+    "rh": 0,
+    "inputs": 0,
+    "x": 160,
+    "y": 120,
+    "wires": [
+      [
+        "fn_ttn2"
+      ]
+    ]
+  },
+  {
+    "id": "fn_ttn2",
+    "type": "function",
+    "z": "tab_ttn2",
+    "name": "Décodage TTN",
+    "func": "// Reçoit un message \"up\" de TTN (déjà décodé par le formateur CayenneLPP)\nconst up = msg.payload;\nconst um = up.uplink_message || {};\nconst dec = um.decoded_payload || {};\n\n// Les noms des champs décodés finissent par le numéro de canal (ex. temperature_1)\nfunction trouver(prefixes) {\n    for (const k of Object.keys(dec)) {\n        for (const p of prefixes) {\n            if (k.indexOf(p) === 0) { return dec[k]; }\n        }\n    }\n    return undefined;\n}\nconst temperature = trouver(['temperature']);\nconst humidity = trouver(['relative_humidity', 'humidity']);\nif (temperature === undefined || humidity === undefined) {\n    node.warn('Payload décodé inattendu : ' + JSON.stringify(dec));\n    return null;\n}\n\nconst rx = (um.rx_metadata && um.rx_metadata[0]) || {};\nconst gw = rx.gateway_ids ? rx.gateway_ids.gateway_id : 'n/a';\nconst dev = up.end_device_ids ? up.end_device_ids.device_id : 'n/a';\nconst t = up.received_at ? new Date(up.received_at).toLocaleTimeString('fr-FR') : 'n/a';\nconst fcnt = (um.f_cnt !== undefined) ? um.f_cnt : 'n/a';\n\nconst infos = {\n    device_id: dev, fcnt: fcnt, fport: um.f_port, received_at: up.received_at,\n    gateway_id: gw, rssi: rx.rssi, snr: rx.snr,\n    temperature: temperature, humidity: humidity\n};\nconst texte = '#' + fcnt + ' | ' + dev + ' | passerelle ' + gw +\n              ' | RSSI ' + rx.rssi + ' dBm | SNR ' + rx.snr + ' dB | reçu à ' + t;\n\nnode.status({fill: 'green', shape: 'dot', text: temperature + ' °C / ' + humidity + ' %'});\nreturn [\n    {payload: infos},\n    {payload: temperature, topic: 'Température'},\n    {payload: humidity, topic: 'Humidité'},\n    {payload: texte}\n];\n",
+    "outputs": 4,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 440,
+    "y": 120,
+    "wires": [
+      [
+        "dbg_a1",
+        "fn_alerte"
+      ],
+      [
+        "g_a_t",
+        "ch_a"
+      ],
+      [
+        "g_a_h",
+        "ch_a"
+      ],
+      [
+        "t_a_trame"
+      ]
+    ]
+  },
+  {
+    "id": "dbg_a1",
+    "type": "debug",
+    "z": "tab_ttn2",
+    "name": "Mesures extraites",
+    "active": true,
+    "tosidebar": true,
+    "console": false,
+    "tostatus": false,
+    "complete": "payload",
+    "targetType": "msg",
+    "statusVal": "",
+    "statusType": "auto",
+    "x": 440,
+    "y": 200,
+    "wires": []
+  },
+  {
+    "id": "fn_alerte",
+    "type": "function",
+    "z": "tab_ttn2",
+    "name": "Règles d'alerte",
+    "func": "// RÈGLES D'ALERTE : compare les mesures aux seuils réglables sur le dashboard\nlet sT = flow.get('seuilT'); if (sT === undefined) { sT = 27; }   // °C\nlet sH = flow.get('seuilH'); if (sH === undefined) { sH = 90; }   // %\nlet last = flow.get('last');                                       // dernières mesures\nconst heure = new Date().toLocaleTimeString('fr-FR');\n\n// 1) Que reçoit-on ? un seuil modifié, le bouton de test, ou une nouvelle mesure\nif (msg.topic === 'seuilT') {\n    sT = Number(msg.payload); flow.set('seuilT', sT);\n} else if (msg.topic === 'seuilH') {\n    sH = Number(msg.payload); flow.set('seuilH', sH);\n} else if (msg.topic === 'test') {\n    const texte = 'Alerte de test déclenchée à ' + heure;\n    return [\n        {payload: texte, topic: 'ALERTE (test)'},\n        {payload: '⚠️ ALERTE (test)'},\n        {payload: heure + ' : alerte de test'},\n        {payload: 'Seuils : T > ' + sT + ' °C | H > ' + sH + ' %'}\n    ];\n} else if (msg.payload && msg.payload.temperature !== undefined) {\n    last = msg.payload; flow.set('last', last);\n}\n\nconst seuils = {payload: 'Seuils : T > ' + sT + ' °C | H > ' + sH + ' %'};\nif (!last) {\n    return [null, {payload: 'En attente de mesures...'}, null, seuils];\n}\n\n// 2) Évaluation\nconst alertes = [];\nif (last.temperature > sT) { alertes.push('Température ' + last.temperature + ' °C > seuil ' + sT + ' °C'); }\nif (last.humidity > sH)    { alertes.push('Humidité ' + last.humidity + ' % > seuil ' + sH + ' %'); }\n\nif (alertes.length > 0) {\n    node.status({fill: 'red', shape: 'dot', text: 'ALERTE'});\n    return [\n        {payload: alertes.join(' ; '), topic: 'ALERTE'},          // notification\n        {payload: '⚠️ ALERTE : ' + alertes.join(' ; ')},           // état\n        {payload: heure + ' : ' + alertes.join(' ; ')},            // dernière alerte\n        seuils\n    ];\n}\nnode.status({fill: 'green', shape: 'dot', text: 'normal'});\nreturn [null, {payload: '✅ Normal : ' + last.temperature + ' °C, ' + last.humidity + ' %'}, null, seuils];\n",
+    "outputs": 4,
+    "timeout": 0,
+    "noerr": 0,
+    "initialize": "",
+    "finalize": "",
+    "libs": [],
+    "x": 760,
+    "y": 280,
+    "wires": [
+      [
+        "toast_a"
+      ],
+      [
+        "t_a_etat"
+      ],
+      [
+        "t_a_derniere"
+      ],
+      [
+        "t_a_seuils"
+      ]
+    ]
+  },
+  {
+    "id": "g_a_t",
+    "type": "ui_gauge",
+    "z": "tab_ttn2",
+    "name": "",
+    "group": "ui_grp_ttn",
+    "order": 1,
+    "width": 3,
+    "height": 3,
+    "gtype": "gage",
+    "title": "Température",
+    "label": "°C",
+    "format": "{{value}}",
+    "min": 0,
+    "max": 40,
+    "colors": [
+      "#00b500",
+      "#e6e600",
+      "#ca3838"
+    ],
+    "seg1": "27",
+    "seg2": "32",
+    "diff": false,
+    "className": "",
+    "x": 1060,
+    "y": 100,
+    "wires": []
+  },
+  {
+    "id": "g_a_h",
+    "type": "ui_gauge",
+    "z": "tab_ttn2",
+    "name": "",
+    "group": "ui_grp_ttn",
+    "order": 2,
+    "width": 3,
+    "height": 3,
+    "gtype": "gage",
+    "title": "Humidité",
+    "label": "%",
+    "format": "{{value}}",
+    "min": 0,
+    "max": 100,
+    "colors": [
+      "#00b500",
+      "#e6e600",
+      "#ca3838"
+    ],
+    "seg1": "60",
+    "seg2": "80",
+    "diff": false,
+    "className": "",
+    "x": 1060,
+    "y": 150,
+    "wires": []
+  },
+  {
+    "id": "ch_a",
+    "type": "ui_chart",
+    "z": "tab_ttn2",
+    "name": "",
+    "group": "ui_grp_ttn",
+    "order": 3,
+    "width": 6,
+    "height": 4,
+    "label": "Historique",
+    "chartType": "line",
+    "legend": "true",
+    "xformat": "HH:mm:ss",
+    "interpolate": "linear",
+    "nodata": "En attente de données",
+    "dot": false,
+    "ymin": "",
+    "ymax": "",
+    "removeOlder": 1,
+    "removeOlderPoints": "",
+    "removeOlderUnit": "3600",
+    "cutout": 0,
+    "useOneColor": false,
+    "useUTC": false,
+    "colors": [
+      "#1f77b4",
+      "#aec7e8",
+      "#ff7f0e",
+      "#2ca02c",
+      "#98df8a",
+      "#d62728",
+      "#ff9896",
+      "#9467bd",
+      "#c5b0d5"
+    ],
+    "outputs": 1,
+    "useDifferentColor": false,
+    "className": "",
+    "x": 1060,
+    "y": 200,
+    "wires": [
+      []
+    ]
+  },
+  {
+    "id": "t_a_trame",
+    "type": "ui_text",
+    "z": "tab_ttn2",
+    "group": "ui_grp_ttn",
+    "order": 4,
+    "width": 6,
+    "height": 1,
+    "name": "",
+    "label": "Dernière trame",
+    "format": "{{msg.payload}}",
+    "layout": "col-center",
+    "className": "",
+    "x": 1070,
+    "y": 250,
+    "wires": []
+  },
+  {
+    "id": "t_a_etat",
+    "type": "ui_text",
+    "z": "tab_ttn2",
+    "group": "ui_grp_ttn",
+    "order": 5,
+    "width": 6,
+    "height": 1,
+    "name": "",
+    "label": "État",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "x": 1050,
+    "y": 300,
+    "wires": []
+  },
+  {
+    "id": "t_a_seuils",
+    "type": "ui_text",
+    "z": "tab_ttn2",
+    "group": "ui_grp_ttn",
+    "order": 6,
+    "width": 6,
+    "height": 1,
+    "name": "",
+    "label": "Seuils actifs",
+    "format": "{{msg.payload}}",
+    "layout": "row-spread",
+    "className": "",
+    "x": 1070,
+    "y": 350,
+    "wires": []
+  },
+  {
+    "id": "toast_a",
+    "type": "ui_toast",
+    "z": "tab_ttn2",
+    "position": "top right",
+    "displayTime": "8",
+    "highlight": "#c0392b",
+    "sendall": true,
+    "outputs": 0,
+    "ok": "OK",
+    "cancel": "",
+    "raw": false,
+    "className": "",
+    "topic": "",
+    "name": "Notification d'alerte",
+    "x": 1070,
+    "y": 400,
+    "wires": []
+  },
+  {
+    "id": "t_a_derniere",
+    "type": "ui_text",
+    "z": "tab_ttn2",
+    "group": "ui_grp_ttn",
+    "order": 7,
+    "width": 6,
+    "height": 1,
+    "name": "",
+    "label": "Dernière alerte",
+    "format": "{{msg.payload}}",
+    "layout": "col-center",
+    "className": "",
+    "x": 1070,
+    "y": 450,
+    "wires": []
+  },
+  {
+    "id": "sl_t",
+    "type": "ui_slider",
+    "z": "tab_ttn2",
+    "name": "",
+    "label": "Seuil température (°C)",
+    "tooltip": "",
+    "group": "ui_grp_ttn",
+    "order": 8,
+    "width": 6,
+    "height": 1,
+    "passthru": true,
+    "outs": "end",
+    "topic": "seuilT",
+    "topicType": "str",
+    "min": 0,
+    "max": 40,
+    "step": 0.5,
+    "className": "",
+    "x": 440,
+    "y": 380,
+    "wires": [
+      [
+        "fn_alerte"
+      ]
+    ]
+  },
+  {
+    "id": "sl_h",
+    "type": "ui_slider",
+    "z": "tab_ttn2",
+    "name": "",
+    "label": "Seuil humidité (%)",
+    "tooltip": "",
+    "group": "ui_grp_ttn",
+    "order": 9,
+    "width": 6,
+    "height": 1,
+    "passthru": true,
+    "outs": "end",
+    "topic": "seuilH",
+    "topicType": "str",
+    "min": 50,
+    "max": 100,
+    "step": 1,
+    "className": "",
+    "x": 440,
+    "y": 450,
+    "wires": [
+      [
+        "fn_alerte"
+      ]
+    ]
+  },
+  {
+    "id": "inj_t",
+    "type": "inject",
+    "z": "tab_ttn2",
+    "name": "valeur initiale",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "seuilT",
+    "payload": "27",
+    "payloadType": "num",
+    "x": 160,
+    "y": 380,
+    "wires": [
+      [
+        "sl_t"
+      ]
+    ]
+  },
+  {
+    "id": "inj_h",
+    "type": "inject",
+    "z": "tab_ttn2",
+    "name": "valeur initiale",
+    "props": [
+      {
+        "p": "payload"
+      },
+      {
+        "p": "topic",
+        "vt": "str"
+      }
+    ],
+    "repeat": "",
+    "crontab": "",
+    "once": true,
+    "onceDelay": "1",
+    "topic": "seuilH",
+    "payload": "90",
+    "payloadType": "num",
+    "x": 160,
+    "y": 450,
+    "wires": [
+      [
+        "sl_h"
+      ]
+    ]
+  },
+  {
+    "id": "btn_test",
+    "type": "ui_button",
+    "z": "tab_ttn2",
+    "name": "",
+    "group": "ui_grp_ttn",
+    "order": 10,
+    "width": 6,
+    "height": 1,
+    "passthru": false,
+    "label": "Tester l'alerte",
+    "tooltip": "",
+    "color": "white",
+    "bgcolor": "#c0392b",
+    "className": "",
+    "icon": "warning",
+    "payload": "test",
+    "payloadType": "str",
+    "topic": "test",
+    "topicType": "str",
+    "x": 440,
+    "y": 520,
+    "wires": [
+      [
+        "fn_alerte"
+      ]
+    ]
+  }
+]
